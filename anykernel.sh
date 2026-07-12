@@ -6,16 +6,13 @@
 ### AnyKernel setup
 # global properties
 properties() { '
-kernel.string=ESK Kernel for xaga by bachnxuan @ esk-project
+kernel.string=ALC Kernel for plato by alcint
 do.devicecheck=1
 do.modules=0
 do.systemless=0
 do.cleanup=1
 do.cleanuponabort=0
-device.name1=xaga
-device.name2=xagain
-device.name3=xagapro
-device.name4=xagaproin
+device.name1=plato
 supported.versions=
 supported.vendorpatchlevels=
 '; } # end properties
@@ -36,10 +33,6 @@ reset_dir() {
     rm -rf "$1" || abort "[!] Failed to reset $1"
     mkdir -p "$1" || abort "[!] Failed to create $1"
 }
-
-if [ -f /system/framework/MiuiBooster.jar ]; then
-    abort "[!] HyperOS detected, please use the generic package."
-fi
 
 ui_print " " "- [+] Starting kernel image flashing..."
 ui_print "- [*] Checking kernel image..."
