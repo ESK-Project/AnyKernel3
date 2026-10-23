@@ -6,7 +6,7 @@
 ### AnyKernel setup
 # global properties
 properties() { '
-kernel.string=ESK Kernel for xaga by bachnxuan @ esk-project
+kernel.string=ESK ACK 6.12 for xaga by bachnxuan @ esk-project
 do.devicecheck=1
 do.modules=0
 do.systemless=0
@@ -32,48 +32,110 @@ NO_MAGISK_CHECK=true
 # import functions/variables and setup patching - see for reference (DO NOT REMOVE)
 . tools/ak3-core.sh
 
+find_partition() {
+  local path file;
+  for path in /dev/block/mapper /dev/block/by-name /dev/block/bootdevice/by-name; do
+    for file in "$1$SLOT" "$1"; do
+      if [ -e "$path/$file" ]; then
+        echo "$path/$file";
+        return 0;
+      fi;
+    done;
+  done;
+  return 1;
+}
+
+write_image() {
+  blockdev --setrw "$2" 2>/dev/null || abort "Cannot make partition writable: $2";
+  dd if="$1" of="$2" bs=1048576 conv=fsync || abort "Flashing image failed: $2";
+}
+
 reset_dir() {
     rm -rf "$1" || abort "[!] Failed to reset $1"
     mkdir -p "$1" || abort "[!] Failed to create $1"
 }
 
-if [ -f /system/framework/MiuiBooster.jar ]; then
-    abort "[!] HyperOS detected, please use the generic package."
-fi
+step_begin() {
+    local rest
+    ak3_step_label=$1
+    read -r ak3_step_started rest < /proc/uptime
+    ak3_step_started=${ak3_step_started%%.*}
+    ui_print "- [*] $ak3_step_label..."
+}
 
-ui_print " " "- [+] Starting kernel image flashing..."
-ui_print "- [*] Checking kernel image..."
-"$BIN/busybox" sha256sum -cs Image.zst.sha256 || abort "[!] SHA256 mismatch"
-ui_print "- [*] SHA256 OK"
+step_end() {
+    local now rest
+    read -r now rest < /proc/uptime
+    ui_print "- [timing] $ak3_step_label: $((${now%%.*} - ak3_step_started))s"
+}
 
-ui_print "- [*] Unpacking kernel image..."
-"$BIN/zstd" -d -q --no-progress -o "$AKHOME/Image" "$AKHOME/Image.zst" ||
-    abort "[!] Failed to decompress kernel image"
-ui_print "- [*] Kernel image unpacked"
-
-ui_print "- [+] Flashing kernel image..."
-# boot install
-split_boot # use split_boot to skip ramdisk unpack, e.g. for devices with init_boot ramdisk
-
-if [ -f "$SPLITIMG/ramdisk.cpio" ]; then
-    unpack_ramdisk
-    write_boot
-else
-    flash_boot # use flash_boot to skip ramdisk repack, e.g. for devices with init_boot ramdisk
-fi
-## end boot install
-
-rm -f "$AKHOME/Image" || abort "[!] Failed to remove extracted Image"
+update_vendor_modules() (
+    archive=$1
+    cd "$module_extract_dir/vendor_boot" || abort "[!] Missing vendor_boot payload"
+    entries="$AKHOME/_vendor_module_entries"
+    "$BIN/busybox" cpio -t < "$archive" > "$entries" ||
+        abort "[!] Failed to list vendor ramdisk modules"
+    set --
+    while IFS= read -r entry; do
+        case "$entry" in
+            lib/modules|lib/modules/*|./lib/modules|./lib/modules/*)
+                set -- "$@" "rm ${entry#./}"
+                ;;
+        esac
+    done < "$entries"
+    rm -f "$entries"
+    set -- "$@" "mkdir 0755 lib/modules"
+    for module in lib/modules/*; do
+        [ -f "$module" ] || abort "[!] Missing vendor_boot module files"
+        set -- "$@" "add 0644 $module $module"
+    done
+    "$BIN/magiskboot" cpio "$archive" "$@" || abort "[!] Failed to update vendor ramdisk modules"
+)
 
 module_archive="$AKHOME/module.tar.xz"
 module_extract_dir="$AKHOME/_module"
+prepared_dir="$AKHOME/_prepared"
+reset_dir "$prepared_dir"
 
-if [ -f "$module_archive" ]; then
-    ui_print " " "- [+] Unpacking module package..."
-    reset_dir "$module_extract_dir"
-    busybox tar -xpf "$module_archive" -C "$module_extract_dir" ||
-        abort "- [!] Failed to extract module.tar.xz"
+[ -s "$AKHOME/dt/dtb" ] && [ -s "$AKHOME/dt/dtbo.img" ] || abort "[!] Missing 6.12 device trees"
+step_begin "module archive extraction"
+reset_dir "$module_extract_dir"
+"$BIN/busybox" tar -xpf "$module_archive" -C "$module_extract_dir" ||
+    abort "[!] Failed to extract module.tar.xz"
+step_end
+
+step_begin "kernel decompression"
+"$BIN/zstd" -d -q --no-progress -o "$AKHOME/Image" "$AKHOME/Image.zst" ||
+    abort "[!] Failed to decompress kernel image"
+step_end
+step_begin "kernel gzip compression"
+"$BIN/magiskboot" compress=gzip "$AKHOME/Image" "$AKHOME/Image.gz" ||
+    abort "[!] Failed to compress 6.12 kernel"
+step_end
+rm -f "$AKHOME/Image" || abort "[!] Failed to remove raw kernel"
+ui_print "- [*] Kernel image unpacked"
+
+ui_print "- [+] Preparing kernel image..."
+# boot install
+step_begin "boot read and unpack"
+split_boot
+step_end
+patch_cmdline "clk_ignore_unused" "clk_ignore_unused"
+
+if [ -f "$SPLITIMG/ramdisk.cpio" ]; then
+    step_begin "boot ramdisk repack"
+    unpack_ramdisk
+    repack_ramdisk
+    step_end
 fi
+step_begin "boot image repack"
+repack_boot
+step_end
+mv -f "$AKHOME/boot-new.img" "$prepared_dir/boot.img" || abort "[!] Failed to stage boot"
+boot_block=$BLOCK
+## end boot install
+
+rm -f "$AKHOME/Image.gz" || abort "[!] Failed to remove extracted Image.gz"
 
 # vendor_boot shell variables
 BLOCK=vendor_boot
@@ -85,100 +147,116 @@ PATCH_VBMETA_FLAG=auto
 reset_ak
 
 # vendor_boot install
-split_boot # use split_boot to skip ramdisk unpack, e.g. for dtb on devices with hdr v4 but no vendor_kernel_boot
+step_begin "vendor_boot read and unpack"
+split_boot
+step_end
 
-if [ -d "$module_extract_dir/vendor_boot" ]; then
-    ui_print " " "- [+] Starting vendor_ramdisk modules update..."
+[ -f "$SPLITIMG/dtb" ] || abort "[!] Unsupported vendor_boot DTB layout"
+cp -f "$AKHOME/dt/dtb" "$SPLITIMG/dtb" || abort "[!] Failed to stage DTB"
 
-    vendor_boot_ramdisk_dir="$AKHOME/_vendor_boot_ramdisk"
+updated=0
+for ramdisk in "$SPLITIMG"/vendor_ramdisk/*.cpio; do
+    [ -f "$ramdisk" ] || continue
+    "$BIN/magiskboot" cpio "$ramdisk" "exists lib/modules" || continue
+    step_begin "vendor_boot modules ($(basename "$ramdisk"))"
+    update_vendor_modules "$ramdisk" || abort "[!] Failed to update vendor ramdisk modules"
+    step_end
+    step_begin "vendor_boot LZ4 compression ($(basename "$ramdisk"))"
+    "$BIN/magiskboot" compress=lz4_legacy "$ramdisk" "$ramdisk.lz4" ||
+        abort "[!] Failed to compress vendor ramdisk"
+    mv -f "$ramdisk.lz4" "$ramdisk" || abort "[!] Failed to stage vendor ramdisk"
+    step_end
+    updated=$((updated + 1))
+done
+[ "$updated" -gt 0 ] || abort "[!] No supported vendor ramdisk with lib/modules"
 
-    reset_dir "$vendor_boot_ramdisk_dir"
-
-    ui_print "- [*] Unpacking ramdisk..."
-    (
-        cd "$vendor_boot_ramdisk_dir" &&
-            "$BIN/busybox" cpio -i -d <"$SPLITIMG/vendor_ramdisk/ramdisk.cpio"
-    ) || abort "- [!] Failed to unpack ramdisk.cpio"
-
-    ui_print "- [*] Updating ramdisk.cpio modules..."
-    rm -rf "$vendor_boot_ramdisk_dir/lib/modules" ||
-        abort "- [!] Failed to remove old modules"
-    mkdir -p "$vendor_boot_ramdisk_dir/lib" ||
-        abort "- [!] Failed to prepare ramdisk modules directory"
-    cp -a "$module_extract_dir/vendor_boot/lib/." "$vendor_boot_ramdisk_dir/lib/" ||
-        abort "- [!] Failed to copy vendor_boot modules"
-
-    ui_print "- [*] Repacking ramdisk.cpio..."
-    (
-        cd "$vendor_boot_ramdisk_dir" &&
-            busybox find . | busybox cpio -o -H newc >"$SPLITIMG/vendor_ramdisk/ramdisk.cpio" 2>/dev/null
-    ) || abort "[!] Failed to repack ramdisk.cpio"
-
-    rm -rf "$vendor_boot_ramdisk_dir" ||
-        abort "- [!] Failed to remove working directory"
-fi
-
-ui_print "- [+] Flashing new vendor_boot image..."
-flash_boot # use flash_boot to skip ramdisk repack, e.g. for dtb on devices with hdr v4 but no vendor_kernel_boot
+step_begin "vendor_boot image repack"
+repack_boot
+step_end
+mv -f "$AKHOME/boot-new.img" "$prepared_dir/vendor_boot.img" || abort "[!] Failed to stage vendor_boot"
+vendor_boot_block=$BLOCK
 ## end vendor_boot install
 
 ## vendor_dlkm install
-if [ -d "$module_extract_dir/vendor_dlkm" ]; then
-    # reset for vendor_dlkm patching
-    reset_ak
+# reset for vendor_dlkm patching
+reset_ak
 
-    ui_print " " "/dev/block/mapper/vendor_dlkm${SLOT}"
-    ui_print " " "- [+] Starting /vendor_dlkm modules update..."
+ui_print " " "/dev/block/mapper/vendor_dlkm${SLOT}"
+ui_print " " "- [+] Starting /vendor_dlkm modules update..."
 
-    ui_print "- [*] Pulling /vendor_dlkm image from current slot (${SLOT})..."
-    dd if=/dev/block/mapper/vendor_dlkm"${SLOT}" of="${AKHOME}"/vendor_dlkm.img ||
-        abort "[!] Failed to pull vendor_dlkm${SLOT}.img"
-    extract_vendor_dlkm_dir=${AKHOME}/_extract_vendor_dlkm
-    reset_dir "$extract_vendor_dlkm_dir"
+step_begin "vendor_dlkm read"
+vendor_dlkm_block=$(find_partition vendor_dlkm) || abort "[!] Missing vendor_dlkm partition"
+dd if="$vendor_dlkm_block" of="${AKHOME}"/vendor_dlkm.img ||
+    abort "[!] Failed to pull vendor_dlkm${SLOT}.img"
+step_end
+extract_vendor_dlkm_dir=${AKHOME}/_extract_vendor_dlkm
+reset_dir "$extract_vendor_dlkm_dir"
 
-    ui_print "- [*] Unpacking /vendor_dlkm image..."
-    "${BIN}"/extract.erofs -i "${AKHOME}"/vendor_dlkm.img -x -T8 -o "${extract_vendor_dlkm_dir}" >/dev/null 2>&1 ||
-        abort "[!] Failed to unpack the vendor_dlkm image"
-    sync
+step_begin "vendor_dlkm extraction"
+"${BIN}"/extract.erofs -i "${AKHOME}"/vendor_dlkm.img -x -T8 -o "${extract_vendor_dlkm_dir}" >/dev/null 2>&1 ||
+    abort "[!] Failed to unpack the vendor_dlkm image"
+step_end
+step_begin "filesystem sync"
+sync
+step_end
 
-    ui_print "- [*] Updating /vendor_dlkm modules..."
-    extract_vendor_dlkm_modules_dir=${extract_vendor_dlkm_dir}/vendor_dlkm/lib/modules
-    rm -f "${extract_vendor_dlkm_modules_dir}"/* ||
-        abort "[!] Failed to remove pre-existing files in ${extract_vendor_dlkm_modules_dir}"
-    rm -f "${extract_vendor_dlkm_dir}"/config/vendor_dlkm_fs_config "${extract_vendor_dlkm_dir}"/config/vendor_dlkm_file_contexts ||
-        abort "[!] Failed to remove pre-existing fs_config and file_contexts in ${extract_vendor_dlkm_dir}/config"
-    cp -a "$module_extract_dir/vendor_dlkm/lib/modules/." "${extract_vendor_dlkm_modules_dir}/" ||
-        abort "[!] Failed to copy vendor_dlkm modules"
-    mv "${AKHOME}"/config/vendor_dlkm* "${extract_vendor_dlkm_dir}"/config/ ||
-        abort "[!] Failed to move fs_config and file_contexts to ${extract_vendor_dlkm_dir}/config"
+step_begin "vendor_dlkm module replacement"
+extract_vendor_dlkm_modules_dir=${extract_vendor_dlkm_dir}/vendor_dlkm/lib/modules
+rm -f "${extract_vendor_dlkm_modules_dir}"/* ||
+    abort "[!] Failed to remove pre-existing files in ${extract_vendor_dlkm_modules_dir}"
+rm -f "${extract_vendor_dlkm_dir}"/config/vendor_dlkm_fs_config "${extract_vendor_dlkm_dir}"/config/vendor_dlkm_file_contexts ||
+    abort "[!] Failed to remove pre-existing fs_config and file_contexts in ${extract_vendor_dlkm_dir}/config"
+cp -a "$module_extract_dir/vendor_dlkm/lib/modules/." "${extract_vendor_dlkm_modules_dir}/" ||
+    abort "[!] Failed to copy vendor_dlkm modules"
+mv "${AKHOME}"/config/vendor_dlkm* "${extract_vendor_dlkm_dir}"/config/ ||
+    abort "[!] Failed to move fs_config and file_contexts to ${extract_vendor_dlkm_dir}/config"
 
-    ui_print "- [*] Repacking /vendor_dlkm image..."
-    rm -f "${AKHOME}"/vendor_dlkm.img ||
-        abort "[!] Failed to remove pre-existing vendor_dlkm.img"
-    "${BIN}"/mkfs.erofs \
-        --mount-point /vendor_dlkm \
-        --fs-config-file "${extract_vendor_dlkm_dir}"/config/vendor_dlkm_fs_config \
-        --file-contexts "${extract_vendor_dlkm_dir}"/config/vendor_dlkm_file_contexts \
-        -z lz4 \
-        -b 4096 \
-        -C 262144 \
-        -T 1230768000 \
-        "${AKHOME}"/vendor_dlkm.img "${extract_vendor_dlkm_dir}"/vendor_dlkm ||
-        abort "[!] Failed to repack the vendor_dlkm image"
-    rm -rf "${extract_vendor_dlkm_dir}" ||
-        abort "[!] Failed to remove working directory"
-    unset extract_vendor_dlkm_dir extract_vendor_dlkm_modules_dir
+step_end
+step_begin "vendor_dlkm EROFS generation"
+rm -f "${AKHOME}"/vendor_dlkm.img ||
+    abort "[!] Failed to remove pre-existing vendor_dlkm.img"
+"${BIN}"/mkfs.erofs \
+    --mount-point /vendor_dlkm \
+    --fs-config-file "${extract_vendor_dlkm_dir}"/config/vendor_dlkm_fs_config \
+    --file-contexts "${extract_vendor_dlkm_dir}"/config/vendor_dlkm_file_contexts \
+    -z lz4 \
+    -b 4096 \
+    -C 262144 \
+    -T 1230768000 \
+    "${AKHOME}"/vendor_dlkm.img "${extract_vendor_dlkm_dir}"/vendor_dlkm ||
+    abort "[!] Failed to repack the vendor_dlkm image"
+step_end
+rm -rf "${extract_vendor_dlkm_dir}" ||
+    abort "[!] Failed to remove working directory"
+unset extract_vendor_dlkm_dir extract_vendor_dlkm_modules_dir
 
-    vendor_dlkm_block_size=$(blockdev --getsize64 /dev/block/mapper/vendor_dlkm"${SLOT}")
-    if [ "$(wc -c <"$AKHOME"/vendor_dlkm.img)" -lt "${vendor_dlkm_block_size}" ]; then
-        ui_print "- [*] Generated /vendor_dlkm image size is smaller than the block device..."
-        ui_print "- [*] Truncating to fill the erofs image file..."
-        truncate -c -s "$vendor_dlkm_block_size" "$AKHOME"/vendor_dlkm.img
-    fi
-
-    ui_print "- [+] Flashing new /vendor_dlkm image..."
-    flash_generic vendor_dlkm
-fi
+mv -f "$AKHOME/vendor_dlkm.img" "$prepared_dir/vendor_dlkm.img" ||
+    abort "[!] Failed to stage vendor_dlkm"
 
 rm -rf "$module_extract_dir"
 ## end vendor_dlkm install
+
+step_begin "image preparation"
+cp -f "$AKHOME/dt/dtbo.img" "$prepared_dir/dtbo.img" || abort "[!] Failed to stage DTBO"
+dtbo_block=$(find_partition dtbo) || abort "[!] Missing dtbo partition"
+for image in "$prepared_dir"/*.img; do
+    [ -s "$image" ] || abort "[!] Missing image: $image"
+done
+
+step_end
+
+mv -f "$prepared_dir/vendor_dlkm.img" "$AKHOME/vendor_dlkm.img" || abort "[!] Failed to stage vendor_dlkm"
+mv -f "$prepared_dir/dtbo.img" "$AKHOME/dtbo.img" || abort "[!] Failed to stage DTBO"
+ui_print "- [+] Flashing prepared images..."
+step_begin "boot write and flush"
+write_image "$prepared_dir/boot.img" "$boot_block"
+step_end
+step_begin "vendor_boot write and flush"
+write_image "$prepared_dir/vendor_boot.img" "$vendor_boot_block"
+step_end
+step_begin "vendor_dlkm write and flush"
+write_image "$AKHOME/vendor_dlkm.img" "$vendor_dlkm_block"
+step_end
+step_begin "dtbo write and flush"
+write_image "$AKHOME/dtbo.img" "$dtbo_block"
+step_end

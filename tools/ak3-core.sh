@@ -243,8 +243,8 @@ repack_ramdisk() {
   fi;
 }
 
-# flash_boot (build, sign and write image only)
-flash_boot() {
+# repack_boot (build and sign image only)
+repack_boot() {
   local varlist i kernel ramdisk fdt cmdline comp part0 part1 nocompflag signfail pk8 cert avbtype;
 
   cd $SPLITIMG;
@@ -438,6 +438,10 @@ flash_boot() {
   elif [ "$(wc -c < boot-new.img)" -gt "$(wc -c < boot.img)" ]; then
     abort "New image larger than target partition. Aborting...";
   fi;
+}
+
+flash_boot() {
+  repack_boot;
   blockdev --setrw $BLOCK 2>/dev/null;
   if [ -f "$BIN/flash_erase" -a -f "$BIN/nandwrite" ]; then
     flash_erase $BLOCK 0 0;
