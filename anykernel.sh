@@ -7,15 +7,15 @@
 # global properties
 properties() { '
 kernel.string=ESK Kernel for xaga by bachnxuan @ esk-project
-do.devicecheck=1
+do.devicecheck=0
 do.modules=0
 do.systemless=0
 do.cleanup=1
 do.cleanuponabort=0
-device.name1=xaga
-device.name2=xagain
-device.name3=xagapro
-device.name4=xagaproin
+device.name1=
+device.name2=
+device.name3=
+device.name4=
 supported.versions=
 supported.vendorpatchlevels=
 '; } # end properties
@@ -36,10 +36,6 @@ reset_dir() {
     rm -rf "$1" || abort "[!] Failed to reset $1"
     mkdir -p "$1" || abort "[!] Failed to create $1"
 }
-
-if [ -f /system/framework/MiuiBooster.jar ]; then
-    abort "[!] HyperOS detected, please use the generic package."
-fi
 
 ui_print " " "- [+] Starting kernel image flashing..."
 ui_print "- [*] Checking kernel image..."
@@ -105,8 +101,8 @@ if [ -d "$module_extract_dir/vendor_boot" ]; then
         abort "- [!] Failed to remove old modules"
     mkdir -p "$vendor_boot_ramdisk_dir/lib" ||
         abort "- [!] Failed to prepare ramdisk modules directory"
-    cp -a "$module_extract_dir/vendor_boot/lib/." "$vendor_boot_ramdisk_dir/lib/" ||
-        abort "- [!] Failed to copy vendor_boot modules"
+    mv "$module_extract_dir/vendor_boot/lib/modules" "$vendor_boot_ramdisk_dir/lib/modules" ||
+        abort "- [!] Failed to move vendor_boot modules"
 
     ui_print "- [*] Repacking ramdisk.cpio..."
     (
@@ -131,7 +127,7 @@ if [ -d "$module_extract_dir/vendor_dlkm" ]; then
     ui_print " " "- [+] Starting /vendor_dlkm modules update..."
 
     ui_print "- [*] Pulling /vendor_dlkm image from current slot (${SLOT})..."
-    dd if=/dev/block/mapper/vendor_dlkm"${SLOT}" of="${AKHOME}"/vendor_dlkm.img ||
+    dd if="/dev/block/mapper/vendor_dlkm${SLOT}" of="$AKHOME/vendor_dlkm.img" bs=1048576 ||
         abort "[!] Failed to pull vendor_dlkm${SLOT}.img"
     extract_vendor_dlkm_dir=${AKHOME}/_extract_vendor_dlkm
     reset_dir "$extract_vendor_dlkm_dir"
@@ -139,16 +135,14 @@ if [ -d "$module_extract_dir/vendor_dlkm" ]; then
     ui_print "- [*] Unpacking /vendor_dlkm image..."
     "${BIN}"/extract.erofs -i "${AKHOME}"/vendor_dlkm.img -x -T8 -o "${extract_vendor_dlkm_dir}" >/dev/null 2>&1 ||
         abort "[!] Failed to unpack the vendor_dlkm image"
-    sync
-
     ui_print "- [*] Updating /vendor_dlkm modules..."
     extract_vendor_dlkm_modules_dir=${extract_vendor_dlkm_dir}/vendor_dlkm/lib/modules
-    rm -f "${extract_vendor_dlkm_modules_dir}"/* ||
+    rm -rf "$extract_vendor_dlkm_modules_dir" ||
         abort "[!] Failed to remove pre-existing files in ${extract_vendor_dlkm_modules_dir}"
     rm -f "${extract_vendor_dlkm_dir}"/config/vendor_dlkm_fs_config "${extract_vendor_dlkm_dir}"/config/vendor_dlkm_file_contexts ||
         abort "[!] Failed to remove pre-existing fs_config and file_contexts in ${extract_vendor_dlkm_dir}/config"
-    cp -a "$module_extract_dir/vendor_dlkm/lib/modules/." "${extract_vendor_dlkm_modules_dir}/" ||
-        abort "[!] Failed to copy vendor_dlkm modules"
+    mv "$module_extract_dir/vendor_dlkm/lib/modules" "$extract_vendor_dlkm_modules_dir" ||
+        abort "[!] Failed to move vendor_dlkm modules"
     mv "${AKHOME}"/config/vendor_dlkm* "${extract_vendor_dlkm_dir}"/config/ ||
         abort "[!] Failed to move fs_config and file_contexts to ${extract_vendor_dlkm_dir}/config"
 
