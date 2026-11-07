@@ -6,16 +6,13 @@
 ### AnyKernel setup
 # global properties
 properties() { '
-kernel.string=ESK Kernel for xaga by bachnxuan @ esk-project
-do.devicecheck=0
+kernel.string=ESK Kernel for plato by bachnxuan and AlcInt @ esk-project
+do.devicecheck=1
 do.modules=0
 do.systemless=0
 do.cleanup=1
 do.cleanuponabort=0
-device.name1=
-device.name2=
-device.name3=
-device.name4=
+device.name1=plato
 supported.versions=
 supported.vendorpatchlevels=
 '; } # end properties
