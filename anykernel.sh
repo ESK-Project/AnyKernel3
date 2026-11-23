@@ -139,12 +139,25 @@ if [ -d "$module_extract_dir/vendor_dlkm" ]; then
     extract_vendor_dlkm_modules_dir=${extract_vendor_dlkm_dir}/vendor_dlkm/lib/modules
     rm -rf "$extract_vendor_dlkm_modules_dir" ||
         abort "[!] Failed to remove pre-existing files in ${extract_vendor_dlkm_modules_dir}"
-    rm -f "${extract_vendor_dlkm_dir}"/config/vendor_dlkm_fs_config "${extract_vendor_dlkm_dir}"/config/vendor_dlkm_file_contexts ||
-        abort "[!] Failed to remove pre-existing fs_config and file_contexts in ${extract_vendor_dlkm_dir}/config"
     mv "$module_extract_dir/vendor_dlkm/lib/modules" "$extract_vendor_dlkm_modules_dir" ||
         abort "[!] Failed to move vendor_dlkm modules"
-    mv "${AKHOME}"/config/vendor_dlkm* "${extract_vendor_dlkm_dir}"/config/ ||
-        abort "[!] Failed to move fs_config and file_contexts to ${extract_vendor_dlkm_dir}/config"
+    dlkm_config_dir=${extract_vendor_dlkm_dir}/config
+    awk 'NR == FNR { seen[$1] = 1; next }
+         /^vendor_dlkm\/lib\/modules\// && !seen[$1]++ { print }' \
+        "$dlkm_config_dir/vendor_dlkm_fs_config" "$AKHOME/config/vendor_dlkm_fs_config" > "$dlkm_config_dir/new_modules" ||
+        abort "[!] Failed to prepare module fs_config entries"
+    awk 'NR == FNR {
+             if ($1 == "/vendor_dlkm/lib/modules") label = $2
+             next
+         }
+         {
+             path = "/" $1
+             gsub(/[^[:alnum:]_\/-]/, "\\\\&", path)
+             print path, (label ? label : "u:object_r:vendor_file:s0")
+         }' "$dlkm_config_dir/vendor_dlkm_file_contexts" "$dlkm_config_dir/new_modules" >> "$dlkm_config_dir/vendor_dlkm_file_contexts" ||
+        abort "[!] Failed to add module file contexts"
+    cat "$dlkm_config_dir/new_modules" >> "$dlkm_config_dir/vendor_dlkm_fs_config" ||
+        abort "[!] Failed to add module fs_config entries"
 
     ui_print "- [*] Repacking /vendor_dlkm image..."
     rm -f "${AKHOME}"/vendor_dlkm.img ||
@@ -161,7 +174,7 @@ if [ -d "$module_extract_dir/vendor_dlkm" ]; then
         abort "[!] Failed to repack the vendor_dlkm image"
     rm -rf "${extract_vendor_dlkm_dir}" ||
         abort "[!] Failed to remove working directory"
-    unset extract_vendor_dlkm_dir extract_vendor_dlkm_modules_dir
+    unset extract_vendor_dlkm_dir extract_vendor_dlkm_modules_dir dlkm_config_dir
 
     vendor_dlkm_block_size=$(blockdev --getsize64 /dev/block/mapper/vendor_dlkm"${SLOT}")
     if [ "$(wc -c <"$AKHOME"/vendor_dlkm.img)" -lt "${vendor_dlkm_block_size}" ]; then
