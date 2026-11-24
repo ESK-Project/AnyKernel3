@@ -49,7 +49,7 @@ keycode_select() {
     local key_press key_release
 
     ui_print "- [*] $1"
-    ui_print "- [*] Vol+ = Yes, Vol- = No."
+    ui_print "- [*] Vol+ = Yes (HyperOS), Vol- = No (AOSP)."
     ui_print "- [*] Please press the key..."
     while true; do
         "$BIN/keycheck"
@@ -155,6 +155,12 @@ update_vendor_ramdisk() {
     local work="$AKHOME/_vendor_boot_ramdisk"
     local archive="$SPLITIMG/vendor_ramdisk/ramdisk.cpio"
 
+    # some roms' vendor ramdisk are monolithic
+    if [ ! -f "$archive" ]; then
+        archive="$SPLITIMG/ramdisk.cpio"
+    fi
+
+    [ -f "$archive" ] || abort "[!] Vendor ramdisk not found"
     ui_print " " "- [+] Starting vendor_ramdisk modules update..."
     require "Failed to prepare vendor ramdisk directory" reset_dir "$work"
 
