@@ -32,10 +32,72 @@ NO_MAGISK_CHECK=true
 # import functions/variables and setup patching - see for reference (DO NOT REMOVE)
 . tools/ak3-core.sh
 
+KEYCODE_UP=42
+KEYCODE_DOWN=41
+
 reset_dir() {
     rm -rf "$1" || abort "[!] Failed to reset $1"
     mkdir -p "$1" || abort "[!] Failed to create $1"
 }
+
+keycode_select() {
+    local key_press key_release
+
+    ui_print "- [*] $1"
+    ui_print "- [*] Vol+ = Yes, Vol- = No."
+    ui_print "- [*] Please press the key..."
+    while true; do
+        "$BIN/keycheck"
+        key_press=$?
+        case "$key_press" in
+            0|126|127) abort "[!] Failed to read volume keys" ;;
+        esac
+        "$BIN/keycheck"
+        key_release=$?
+        case "$key_release" in
+            0|126|127) abort "[!] Failed to read volume keys" ;;
+        esac
+        [ "$key_press" = "$key_release" ] || continue
+        case "$key_release" in
+            "$KEYCODE_UP")
+                ui_print "- [*] You chose Yes."
+                return 0
+                ;;
+            "$KEYCODE_DOWN")
+                ui_print "- [*] You chose No."
+                return 1
+                ;;
+        esac
+    done
+}
+
+fix_hyperos_wlan() {
+    local dir="$module_extract_dir/vendor_dlkm/lib/modules"
+    local config="$AKHOME/config/vendor_dlkm_fs_config"
+    local name="wmt_chrdev_wifi_connac2.ko"
+
+    ui_print "- [*] Applying HyperOS WLAN fix..."
+    [ -f "$config" ] || abort "[!] Missing vendor_dlkm fs_config"
+    cp -p "$dir/wmt_chrdev_wifi.ko" "$dir/$name" ||
+        abort "[!] Failed to create WLAN module alias"
+    if ! grep -Fq "vendor_dlkm/lib/modules/$name " "$config"; then
+        printf 'vendor_dlkm/lib/modules/%s 0 0 0644\n' "$name" >> "$config" ||
+            abort "[!] Failed to update WLAN fs_config"
+    fi
+    ui_print "- [*] HyperOS WLAN fix applied"
+}
+
+if [ -f /system/framework/MiuiBooster.jar ]; then
+    prompt="HyperOS detected. Is this correct?"
+else
+    prompt="HyperOS not detected. Are you using HyperOS?"
+fi
+if keycode_select "$prompt"; then
+    is_hyperos=true
+else
+    is_hyperos=false
+fi
+ui_print "- [*] HyperOS: $is_hyperos"
 
 ui_print " " "- [+] Starting kernel image flashing..."
 ui_print "- [*] Checking kernel image..."
@@ -46,6 +108,19 @@ ui_print "- [*] Unpacking kernel image..."
 "$BIN/zstd" -d -q --no-progress -o "$AKHOME/Image" "$AKHOME/Image.zst" ||
     abort "[!] Failed to decompress kernel image"
 ui_print "- [*] Kernel image unpacked"
+
+module_archive="$AKHOME/module.tar.xz"
+module_extract_dir="$AKHOME/_module"
+
+if [ -f "$module_archive" ]; then
+    ui_print " " "- [+] Unpacking module package..."
+    reset_dir "$module_extract_dir"
+    busybox tar -xpf "$module_archive" -C "$module_extract_dir" ||
+        abort "- [!] Failed to extract module.tar.xz"
+    if [ "$is_hyperos" = true ] && [ -d "$module_extract_dir/vendor_dlkm" ]; then
+        fix_hyperos_wlan
+    fi
+fi
 
 ui_print "- [+] Flashing kernel image..."
 # boot install
@@ -60,16 +135,6 @@ fi
 ## end boot install
 
 rm -f "$AKHOME/Image" || abort "[!] Failed to remove extracted Image"
-
-module_archive="$AKHOME/module.tar.xz"
-module_extract_dir="$AKHOME/_module"
-
-if [ -f "$module_archive" ]; then
-    ui_print " " "- [+] Unpacking module package..."
-    reset_dir "$module_extract_dir"
-    busybox tar -xpf "$module_archive" -C "$module_extract_dir" ||
-        abort "- [!] Failed to extract module.tar.xz"
-fi
 
 # vendor_boot shell variables
 BLOCK=vendor_boot
