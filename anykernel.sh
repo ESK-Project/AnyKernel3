@@ -35,10 +35,14 @@ NO_MAGISK_CHECK=true
 KEYCODE_UP=42
 KEYCODE_DOWN=41
 
+fail() {
+    abort " " "[!] $1"
+}
+
 require() {
     local message="$1"
     shift
-    "$@" || abort "[!] $message"
+    "$@" || fail "$message"
 }
 
 reset_dir() {
@@ -47,33 +51,23 @@ reset_dir() {
 
 keycode_select() {
     local key_press key_release
-    local yes="$2" no="$3"
-    local yes_result="${4:-$yes}" no_result="${5:-$no}"
 
-    ui_print "- [*] $1"
-    ui_print "- [*] Vol+ = $yes, Vol- = $no."
-    ui_print "- [*] Please press the key..."
+    ui_print " " "$1" "- Vol+  $2" "- Vol-  $3"
     while true; do
         "$BIN/keycheck"
         key_press=$?
         case "$key_press" in
-            0|126|127) abort "[!] Failed to read volume keys" ;;
+            0|126|127) fail "Could not read the volume keys." ;;
         esac
         "$BIN/keycheck"
         key_release=$?
         case "$key_release" in
-            0|126|127) abort "[!] Failed to read volume keys" ;;
+            0|126|127) fail "Could not read the volume keys." ;;
         esac
         [ "$key_press" = "$key_release" ] || continue
         case "$key_release" in
-            "$KEYCODE_UP")
-                ui_print "- [*] You chose $yes_result."
-                return 0
-                ;;
-            "$KEYCODE_DOWN")
-                ui_print "- [*] You chose $no_result."
-                return 1
-                ;;
+            "$KEYCODE_UP") return 0 ;;
+            "$KEYCODE_DOWN") return 1 ;;
         esac
     done
 }
@@ -83,51 +77,51 @@ fix_hyperos_wlan() {
     local config="$AKHOME/config/vendor_dlkm_fs_config"
     local name="wmt_chrdev_wifi_connac2.ko"
 
-    ui_print "- [*] Applying HyperOS WLAN fix..."
-    require "Missing vendor_dlkm fs_config" test -f "$config"
-    require "Failed to create WLAN module alias" cp -p "$dir/wmt_chrdev_wifi.ko" "$dir/$name"
+    ui_print "- Applying HyperOS Wi-Fi fix"
+    require "The package is missing vendor_dlkm_fs_config for the Wi-Fi fix." test -f "$config"
+    require "Could not create the HyperOS Wi-Fi module $name." \
+        cp -p "$dir/wmt_chrdev_wifi.ko" "$dir/$name"
     if ! grep -Fq "vendor_dlkm/lib/modules/$name " "$config"; then
         printf 'vendor_dlkm/lib/modules/%s 0 0 0644\n' "$name" >> "$config" ||
-            abort "[!] Failed to update WLAN fs_config"
+            fail "Could not add $name to vendor_dlkm_fs_config."
     fi
-    ui_print "- [*] HyperOS WLAN fix applied"
 }
 
 confirm_hyperos() {
     local prompt
 
     if [ -f /system/framework/MiuiBooster.jar ]; then
-        prompt="HyperOS detected. Is this correct?"
+        prompt="HyperOS detected. Choose your ROM."
     else
-        prompt="HyperOS not detected. Are you using HyperOS?"
+        prompt="HyperOS was not detected. Choose your ROM."
     fi
-    if keycode_select "$prompt" "Yes (HyperOS)" "No (AOSP)" Yes No; then
+    if keycode_select "$prompt" HyperOS AOSP; then
         is_hyperos=true
+        ui_print "- Selected HyperOS"
     else
         is_hyperos=false
+        ui_print "- Selected AOSP"
     fi
-    ui_print "- [*] HyperOS: $is_hyperos"
 }
 
 prepare_kernel() {
-    ui_print " " "- [+] Starting kernel image flashing..."
-    ui_print "- [*] Checking kernel image..."
-    require "SHA256 mismatch" "$BIN/busybox" sha256sum -cs Image.zst.sha256
-    ui_print "- [*] SHA256 OK"
-
-    ui_print "- [*] Unpacking kernel image..."
-    require "Failed to decompress kernel image" "$BIN/zstd" -d -q --no-progress \
+    ui_print " " "Preparing the kernel" "- Checking the image checksum"
+    require "Kernel image checksum check failed. Download the installer ZIP again." \
+        "$BIN/busybox" sha256sum -cs Image.zst.sha256
+    ui_print "- Unpacking the kernel image"
+    require "Could not unpack Image.zst. Download the installer ZIP again." \
+        "$BIN/zstd" -d -q --no-progress \
         -o "$AKHOME/Image" "$AKHOME/Image.zst"
-    ui_print "- [*] Kernel image unpacked"
 }
 
 prepare_modules() {
     local archive="$AKHOME/module.tar.xz"
 
     [ -f "$archive" ] || return 0
-    ui_print " " "- [+] Unpacking module package..."
-    require "Failed to prepare module directory" reset_dir "$module_extract_dir"
-    require "Failed to extract module.tar.xz" busybox tar -xpf "$archive" -C "$module_extract_dir"
+    ui_print " " "Preparing kernel modules" "- Unpacking the module archive"
+    require "Could not create the module working directory." reset_dir "$module_extract_dir"
+    require "Could not unpack module.tar.xz. Download the installer ZIP again." \
+        busybox tar -xpf "$archive" -C "$module_extract_dir"
     if [ "$is_hyperos" = true ] && [ -d "$module_extract_dir/vendor_dlkm" ]; then
         fix_hyperos_wlan
     fi
@@ -141,23 +135,24 @@ remove_boot_kernelsu_lkm() {
     case "$?" in
         0) ;;
         1) return 0 ;;
-        *) abort "[!] Could not inspect the boot ramdisk" ;;
+        *) fail "Could not check the boot ramdisk for KernelSU LKM." ;;
     esac
 
-    ui_print " " "- [!] KernelSU LKM detected. It may prevent ESK from booting."
-    keycode_select "Remove the KernelSU LKM?" "Remove LKM and continue" "Abort installation" ||
-        abort "[!] Installation cancelled"
-    require "Original init missing from the boot ramdisk" \
+    keycode_select "KernelSU LKM detected. It can prevent ESK from booting." \
+        "Remove LKM and continue" "Cancel installation" ||
+        fail "Installation cancelled. Boot was left untouched."
+    require "Missing init.real. Restore your ROM's boot image and try again." \
         "$magiskboot" cpio "$archive" "exists init.real"
-    require "Failed to restore the original boot ramdisk" \
+    require "Could not restore init or remove KernelSU LKM from the boot ramdisk." \
         "$magiskboot" cpio "$archive" "rm kernelsu.ko" "mv init.real init"
+    ui_print "- KernelSU LKM removed"
 }
 
 install_boot() {
     local archive="$SPLITIMG/ramdisk.cpio"
 
+    ui_print " " "Updating boot"
     split_boot
-    ui_print "- [+] Flashing kernel image..."
     if [ -f "$archive" ]; then
         remove_boot_kernelsu_lkm "$archive"
         unpack_ramdisk
@@ -165,7 +160,8 @@ install_boot() {
     else
         flash_boot
     fi
-    require "Failed to remove extracted Image" rm -f "$AKHOME/Image"
+    require "Could not remove the temporary kernel image after flashing boot." \
+        rm -f "$AKHOME/Image"
 }
 
 replace_modules() {
@@ -185,27 +181,26 @@ update_vendor_ramdisk() {
         archive="$SPLITIMG/ramdisk.cpio"
     fi
 
-    [ -f "$archive" ] || abort "[!] Vendor ramdisk not found"
-    ui_print " " "- [+] Starting vendor_ramdisk modules update..."
-    require "Failed to prepare vendor ramdisk directory" reset_dir "$work"
+    [ -f "$archive" ] || fail "Could not find a ramdisk in vendor_boot."
+    require "Could not create the vendor_boot working directory." reset_dir "$work"
 
-    ui_print "- [*] Unpacking ramdisk..."
+    ui_print "- Unpacking the vendor ramdisk"
     (
         cd "$work" &&
             "$BIN/busybox" cpio -i -d <"$archive"
-    ) || abort "[!] Failed to unpack ramdisk.cpio"
+    ) || fail "Could not unpack the vendor_boot ramdisk."
 
-    ui_print "- [*] Updating ramdisk.cpio modules..."
-    require "Failed to replace vendor_boot modules" \
+    ui_print "- Replacing kernel modules"
+    require "Could not replace the kernel modules in the vendor_boot ramdisk." \
         replace_modules "$module_extract_dir/vendor_boot/lib/modules" "$work/lib/modules"
 
-    ui_print "- [*] Repacking ramdisk.cpio..."
+    ui_print "- Repacking the vendor ramdisk"
     (
         cd "$work" &&
             busybox find . | busybox cpio -o -H newc >"$archive" 2>/dev/null
-    ) || abort "[!] Failed to repack ramdisk.cpio"
+    ) || fail "Could not repack the vendor_boot ramdisk."
 
-    require "Failed to remove vendor ramdisk directory" rm -rf "$work"
+    require "Could not clean up the vendor_boot working directory." rm -rf "$work"
 }
 
 install_vendor_boot() {
@@ -213,6 +208,7 @@ install_vendor_boot() {
     IS_SLOT_DEVICE=1
     RAMDISK_COMPRESSION=auto
     PATCH_VBMETA_FLAG=auto
+    ui_print " " "Updating vendor_boot"
     reset_ak
     split_boot
 
@@ -220,7 +216,7 @@ install_vendor_boot() {
         update_vendor_ramdisk
     fi
 
-    ui_print "- [+] Flashing new vendor_boot image..."
+    ui_print "- Flashing the vendor_boot image"
     flash_boot
 }
 
@@ -265,34 +261,33 @@ install_vendor_dlkm() {
     reset_ak
     partition="/dev/block/mapper/vendor_dlkm${SLOT}"
 
-    ui_print " " "$partition"
-    ui_print " " "- [+] Starting /vendor_dlkm modules update..."
-    ui_print "- [*] Pulling /vendor_dlkm image from current slot (${SLOT})..."
-    require "Failed to pull vendor_dlkm${SLOT}.img" dd if="$partition" of="$image" bs=1048576
+    ui_print " " "Updating vendor_dlkm" "- Reading vendor_dlkm${SLOT}"
+    require "Could not read $partition." dd if="$partition" of="$image" bs=1048576
 
-    ui_print "- [*] Unpacking /vendor_dlkm image..."
-    require "Failed to prepare vendor_dlkm directory" reset_dir "$work"
-    "$BIN/extract.erofs" -i "$image" -x -T8 -o "$work" >/dev/null 2>&1 ||
-        abort "[!] Failed to unpack the vendor_dlkm image"
+    ui_print "- Extracting the EROFS image"
+    require "Could not create the vendor_dlkm working directory." reset_dir "$work"
+    "$BIN/extract.erofs" -i "$image" -x -T8 -o "$work" >/dev/null ||
+        fail "Could not extract the vendor_dlkm EROFS image."
 
-    ui_print "- [*] Updating /vendor_dlkm modules..."
-    require "Failed to replace vendor_dlkm modules" \
+    ui_print "- Replacing kernel modules"
+    require "Could not replace the kernel modules in vendor_dlkm." \
         replace_modules "$module_extract_dir/vendor_dlkm/lib/modules" "$work/vendor_dlkm/lib/modules"
-    require "Failed to merge vendor_dlkm module metadata" merge_module_metadata "$work/config"
+    require "Could not merge permissions and SELinux labels for the vendor_dlkm modules." \
+        merge_module_metadata "$work/config"
 
-    ui_print "- [*] Repacking /vendor_dlkm image..."
-    require "Failed to repack the vendor_dlkm image" repack_vendor_dlkm "$work" "$image"
-    require "Failed to remove vendor_dlkm working directory" rm -rf "$work"
+    ui_print "- Rebuilding the EROFS image"
+    require "Could not rebuild the vendor_dlkm EROFS image." repack_vendor_dlkm "$work" "$image"
+    require "Could not clean up the vendor_dlkm working directory." rm -rf "$work"
 
     block_size=$(blockdev --getsize64 "$partition") ||
-        abort "[!] Failed to get vendor_dlkm partition size"
-    image_size=$(wc -c <"$image") || abort "[!] Failed to get vendor_dlkm image size"
+        fail "Could not read the size of $partition."
+    image_size=$(wc -c <"$image") || fail "Could not read the size of the rebuilt vendor_dlkm image."
     if [ "$image_size" -lt "$block_size" ]; then
-        ui_print "- [*] Truncating to fill the erofs image file..."
-        require "Failed to pad the vendor_dlkm image" truncate -c -s "$block_size" "$image"
+        ui_print "- Padding the image to fit the partition"
+        require "Could not pad vendor_dlkm.img to $block_size bytes." truncate -c -s "$block_size" "$image"
     fi
 
-    ui_print "- [+] Flashing new /vendor_dlkm image..."
+    ui_print "- Flashing the vendor_dlkm image"
     flash_generic vendor_dlkm
 }
 
