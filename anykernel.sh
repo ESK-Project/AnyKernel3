@@ -47,9 +47,11 @@ reset_dir() {
 
 keycode_select() {
     local key_press key_release
+    local yes="$2" no="$3"
+    local yes_result="${4:-$yes}" no_result="${5:-$no}"
 
     ui_print "- [*] $1"
-    ui_print "- [*] Vol+ = Yes (HyperOS), Vol- = No (AOSP)."
+    ui_print "- [*] Vol+ = $yes, Vol- = $no."
     ui_print "- [*] Please press the key..."
     while true; do
         "$BIN/keycheck"
@@ -65,11 +67,11 @@ keycode_select() {
         [ "$key_press" = "$key_release" ] || continue
         case "$key_release" in
             "$KEYCODE_UP")
-                ui_print "- [*] You chose Yes."
+                ui_print "- [*] You chose $yes_result."
                 return 0
                 ;;
             "$KEYCODE_DOWN")
-                ui_print "- [*] You chose No."
+                ui_print "- [*] You chose $no_result."
                 return 1
                 ;;
         esac
@@ -99,7 +101,7 @@ confirm_hyperos() {
     else
         prompt="HyperOS not detected. Are you using HyperOS?"
     fi
-    if keycode_select "$prompt"; then
+    if keycode_select "$prompt" "Yes (HyperOS)" "No (AOSP)" Yes No; then
         is_hyperos=true
     else
         is_hyperos=false
@@ -131,10 +133,33 @@ prepare_modules() {
     fi
 }
 
+remove_boot_kernelsu_lkm() {
+    local archive="$1"
+    local magiskboot="$BIN/magiskboot"
+
+    "$magiskboot" cpio "$archive" "exists kernelsu.ko"
+    case "$?" in
+        0) ;;
+        1) return 0 ;;
+        *) abort "[!] Could not inspect the boot ramdisk" ;;
+    esac
+
+    ui_print " " "- [!] KernelSU LKM detected. It may prevent ESK from booting."
+    keycode_select "Remove the KernelSU LKM?" "Remove LKM and continue" "Abort installation" ||
+        abort "[!] Installation cancelled"
+    require "Original init missing from the boot ramdisk" \
+        "$magiskboot" cpio "$archive" "exists init.real"
+    require "Failed to restore the original boot ramdisk" \
+        "$magiskboot" cpio "$archive" "rm kernelsu.ko" "mv init.real init"
+}
+
 install_boot() {
-    ui_print "- [+] Flashing kernel image..."
+    local archive="$SPLITIMG/ramdisk.cpio"
+
     split_boot
-    if [ -f "$SPLITIMG/ramdisk.cpio" ]; then
+    ui_print "- [+] Flashing kernel image..."
+    if [ -f "$archive" ]; then
+        remove_boot_kernelsu_lkm "$archive"
         unpack_ramdisk
         write_boot
     else
