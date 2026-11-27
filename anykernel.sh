@@ -203,6 +203,15 @@ update_vendor_ramdisk() {
     require "Could not clean up the vendor_boot working directory." rm -rf "$work"
 }
 
+unpack_vendor_boot() {
+    "$BIN/magiskboot" "$@"
+    local result=$?
+    [ "$result" -eq 1 ] || return "$result"
+    "$BIN/fix_vendor_ramdisk" "$BOOTIMG" || return 1
+    ui_print "- Retrying with the corrected vendor ramdisk size"
+    "$BIN/magiskboot" "$@"
+}
+
 install_vendor_boot() {
     BLOCK=vendor_boot
     IS_SLOT_DEVICE=1
@@ -210,7 +219,7 @@ install_vendor_boot() {
     PATCH_VBMETA_FLAG=auto
     ui_print " " "Updating vendor_boot"
     reset_ak
-    split_boot
+    split_boot unpack_vendor_boot
 
     if [ -d "$module_extract_dir/vendor_boot" ]; then
         update_vendor_ramdisk

@@ -129,7 +129,7 @@ split_boot() {
   elif [ -f "$BIN/rkcrc" ]; then
     dd bs=4096 skip=8 iflag=skip_bytes conv=notrunc if=$BOOTIMG of=ramdisk.cpio.gz;
   else
-    (set -o pipefail; magiskboot unpack -h $BOOTIMG 2>&1 | tee infotmp >&2);
+    (set -o pipefail; "${1:-magiskboot}" unpack -h $BOOTIMG 2>&1 | tee infotmp >&2);
     case $? in
       1) splitfail=1;;
     esac;
