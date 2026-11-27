@@ -213,7 +213,7 @@ unpack_vendor_boot() {
 }
 
 install_vendor_boot() {
-    BLOCK=vendor_boot
+    BLOCK="${BLOCK%/*}/vendor_boot$SLOT"
     IS_SLOT_DEVICE=1
     RAMDISK_COMPRESSION=auto
     PATCH_VBMETA_FLAG=auto
@@ -257,7 +257,7 @@ repack_vendor_dlkm() {
             --mount-point /vendor_dlkm \
             --fs-config-file "$work/config/vendor_dlkm_fs_config" \
             --file-contexts "$work/config/vendor_dlkm_file_contexts" \
-            -z lz4 -b 4096 -C 262144 -T 1230768000 \
+            -z lz4hc,level=12 -b 4096 -C 262144 -T 1230768000 \
             "$image" "$work/vendor_dlkm"
 }
 
@@ -297,7 +297,41 @@ install_vendor_dlkm() {
     fi
 
     ui_print "- Flashing the vendor_dlkm image"
-    flash_generic vendor_dlkm
+    flash_generic vendor_dlkm "$partition"
+}
+
+# Ref: https://github.com/Pzqqt/AnyKernel3/blob/Marble-Bouquet/anykernel.sh
+backup_partitions() {
+    ROLLBACK_DIR="$AKHOME/_orig"
+    require "Could not create the partition backup directory." mkdir -p "$ROLLBACK_DIR"
+    require "Could not back up boot." \
+        dd if="$BLOCK" of="$ROLLBACK_DIR/boot.img" bs=1048576
+    require "Could not back up vendor_boot." \
+        dd if="${BLOCK%/*}/vendor_boot$SLOT" of="$ROLLBACK_DIR/vendor_boot.img" bs=1048576
+    if [ -d "$module_extract_dir/vendor_dlkm" ]; then
+        require "Could not back up vendor_dlkm." \
+            dd if="/dev/block/mapper/vendor_dlkm$SLOT" of="$ROLLBACK_DIR/vendor_dlkm.img" bs=1048576
+    fi
+    printf '%s\n' "$SLOT" >"$ROLLBACK_DIR/slot" || fail "Could not save the backup slot."
+    getprop ro.product.device >"$ROLLBACK_DIR/device" || fail "Could not save the backup device."
+}
+
+create_restore_zip() {
+    local archive="/sdcard/ESK-restore-$(cat "$ROLLBACK_DIR/device")$SLOT-$(date +%Y%m%d-%H%M%S).zip"
+
+    ui_print "- Creating the restore ZIP"
+    (
+        cd "$AKHOME" &&
+            "$BIN/7za" a -tzip -bd "$archive" META-INF LICENSE _restore_anykernel.sh _orig \
+                tools/ak3-core.sh tools/busybox tools/fec tools/httools_static tools/lptools_static \
+                tools/snapshotupdater_static &&
+            "$BIN/7za" rn -bd "$archive" _restore_anykernel.sh anykernel.sh
+    ) || {
+        rm -f "$archive"
+        fail "Could not create the restore ZIP in /sdcard."
+    }
+    sync
+    ui_print "- Restore ZIP saved to $archive"
 }
 
 main() {
@@ -307,6 +341,8 @@ main() {
     confirm_hyperos
     prepare_kernel
     prepare_modules
+    backup_partitions
+    create_restore_zip
     install_boot
     install_vendor_boot
     install_vendor_dlkm

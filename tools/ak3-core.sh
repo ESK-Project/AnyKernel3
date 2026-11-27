@@ -309,6 +309,11 @@ repack_ramdisk() {
   fi;
 }
 
+mark_partition_write() {
+  [ "$ROLLBACK_DIR" ] && [ -f "$ROLLBACK_DIR/$1.img" ] || return 0;
+  printf '%s\n' "$2" > "$ROLLBACK_DIR/$1.writing" || abort "Could not mark $1 for rollback.";
+}
+
 # flash_boot (build, sign and write image only)
 flash_boot() {
   local varlist i kernel ramdisk fdt cmdline comp part0 part1 vndrname needskernelpatch nocompflag signfail pk8 cert avbtype;
@@ -513,6 +518,8 @@ flash_boot() {
   elif [ "$(wc -c < boot-new.img)" -gt "$(wc -c < boot.img)" ]; then
     abort "New image larger than target partition. Aborting...";
   fi;
+  local partition=${BLOCK##*/};
+  mark_partition_write "${partition%"$SLOT"}" "$BLOCK";
   blockdev --setrw $BLOCK 2>/dev/null;
   if [ -f "$BIN/flash_erase" -a -f "$BIN/nandwrite" ]; then
     flash_erase $BLOCK 0 0;
@@ -528,7 +535,7 @@ flash_boot() {
   fi;
 }
 
-# flash_generic <name>
+# flash_generic <name> [block]
 flash_generic() {
   local avb avbblock avbpath file flags img imgblock imgsz isro isunmounted path;
 
@@ -541,15 +548,20 @@ flash_generic() {
   done;
 
   if [ "$img" -a ! -f ${1}_flashed ]; then
-    for path in /dev/block/mapper /dev/block/by-name /dev/block/bootdevice/by-name; do
-      for file in $1 $1$SLOT; do
-        if [ -e $path/$file ]; then
-          imgblock=$path/$file;
-          break 2;
-        fi;
+    if [ "$2" ]; then
+      imgblock=$2;
+      path=${imgblock%/*};
+    else
+      for path in /dev/block/mapper /dev/block/by-name /dev/block/bootdevice/by-name; do
+        for file in $1 $1$SLOT; do
+          if [ -e $path/$file ]; then
+            imgblock=$path/$file;
+            break 2;
+          fi;
+        done;
       done;
-    done;
-    if [ ! "$imgblock" ]; then
+    fi;
+    if [ ! -e "$imgblock" ]; then
       abort "$1 partition could not be found. Aborting...";
     fi;
     if [ ! "$NO_BLOCK_DISPLAY" ]; then
@@ -572,12 +584,14 @@ flash_generic() {
             done;
           done;
           cd $BIN;
+          mark_partition_write "$1" "$imgblock";
           httools_static patch $1 $AKHOME/$img $avbblock || abort "Failed to patch $1 on $avb. Aborting...";
           cd $AKHOME;
         fi
       fi
       imgsz=$(wc -c < $img);
       if [ "$imgsz" != "$(wc -c < $imgblock)" ]; then
+        mark_partition_write "$1" "$imgblock";
         if [ -d /postinstall/tmp -a "$SLOT_SELECT" == "inactive" ]; then
           echo "Resizing $1$SLOT snapshot..." >&2;
           snapshotupdater_static update $1 $imgsz || abort "Resizing $1$SLOT snapshot failed. Aborting...";
@@ -610,6 +624,7 @@ flash_generic() {
     elif [ "$(wc -c < $img)" -gt "$(wc -c < $imgblock)" ]; then
       abort "New $1 image larger than $1 partition. Aborting...";
     fi;
+    mark_partition_write "$1" "$imgblock";
     isro=$(blockdev --getro $imgblock 2>/dev/null);
     blockdev --setrw $imgblock 2>/dev/null;
     if [ -f "$BIN/flash_erase" -a -f "$BIN/nandwrite" ]; then

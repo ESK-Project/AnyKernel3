@@ -565,7 +565,18 @@ do_vendorlevelcheck;
 
 ui_print "Installing...";
 ash anykernel.sh;
+# Ref: https://github.com/Pzqqt/AnyKernel3/blob/Marble-Bouquet/META-INF/com/google/android/update-binary#L575-L584
 if [ $? != 0 ]; then
+  for marker in "$AKHOME"/_orig/*.writing; do
+    [ -f "$marker" ] || continue;
+    ui_print " " "Rolling back the partition writes...";
+    if ash "$AKHOME/_restore_anykernel.sh" rollback; then
+      ui_print "- Rollback complete";
+    else
+      ui_print "[!] Rollback failed. Check the installer log.";
+    fi;
+    break;
+  done;
   abort;
 fi;
 
